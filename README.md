@@ -56,7 +56,7 @@ docker run -d \
   -e RCABOT_SERVER_URL=wss://app.infranexis.com/agent/ws \
   -e RCABOT_API_KEY=rbk_live_xxx \
   -e RCABOT_CUSTOMER_ID=your-id \
-  ghcr.io/infranexisai/resolve-agent:latest
+  infranexis/resolve-agent:latest
 ```
 
 ## Build from source
