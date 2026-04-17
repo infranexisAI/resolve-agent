@@ -1,0 +1,11 @@
+websockets==12.0
+kubernetes==29.0.0
+psutil==6.1.0
+
+# Cloud SDKs — install only the one(s) you need
+# AWS CloudWatch Logs + Metrics + CloudTrail:
+#   pip install boto3
+# Azure Monitor Logs + Metrics + Activity Log (infra-wide):
+#   pip install azure-identity azure-monitor-query azure-mgmt-monitor
+# GCP Cloud Logging + Monitoring:
+#   pip install google-cloud-logging google-cloud-monitoring
