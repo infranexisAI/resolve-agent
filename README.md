@@ -63,9 +63,9 @@ Deploys as a `Deployment` in the `causa-agent` namespace with read-only cluster 
 
 ```bash
 docker run -d \
-  -e RCABOT_SERVER_URL=wss://causa.infranexis.com/agent/ws \
-  -e RCABOT_API_KEY=rbk_live_xxx \
-  -e RCABOT_CUSTOMER_ID=your-customer-id \
+  -e CAUSA_SERVER_URL=wss://causa.infranexis.com/agent/ws \
+  -e CAUSA_API_KEY=rbk_live_xxx \
+  -e CAUSA_CUSTOMER_ID=your-customer-id \
   ghcr.io/infranexis/causa-agent:latest
 ```
 
@@ -77,9 +77,9 @@ docker run -d \
 git clone https://github.com/infranexisAI/causa-agent
 cd causa-agent
 pip install -r requirements.txt
-export RCABOT_SERVER_URL=wss://causa.infranexis.com/agent/ws
-export RCABOT_API_KEY=rbk_live_xxx
-export RCABOT_CUSTOMER_ID=your-customer-id
+export CAUSA_SERVER_URL=wss://causa.infranexis.com/agent/ws
+export CAUSA_API_KEY=rbk_live_xxx
+export CAUSA_CUSTOMER_ID=your-customer-id
 python agent.py
 ```
 
@@ -106,17 +106,19 @@ Cloud credentials are **never stored** — the agent uses your existing instance
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `RCABOT_SERVER_URL` | Yes | — | `wss://causa.infranexis.com/agent/ws` |
-| `RCABOT_API_KEY` | Yes | — | API key from the Causa dashboard |
-| `RCABOT_CUSTOMER_ID` | Yes | — | Customer ID from the Causa dashboard |
-| `RCABOT_NAMESPACES` | No | `default` | Kubernetes namespaces to watch (comma-separated) |
-| `RCABOT_HOSTNAME` | No | auto-detected | Override reported hostname |
-| `RCABOT_LABELS` | No | — | Extra labels e.g. `env=prod,role=webserver` |
-| `RCABOT_AWS_REGION` | No | auto-detected | AWS region |
-| `RCABOT_AWS_LOG_GROUPS` | No | — | CloudWatch log groups to query (comma-separated) |
-| `RCABOT_AZURE_WORKSPACE_ID` | No | — | Log Analytics workspace ID |
-| `RCABOT_AZURE_RESOURCE_ID` | No | — | Azure resource ID for metrics |
-| `RCABOT_GCP_PROJECT_ID` | No | auto-detected | GCP project ID |
+| `CAUSA_SERVER_URL` | Yes | — | `wss://causa.infranexis.com/agent/ws` |
+| `CAUSA_API_KEY` | Yes | — | API key from the Causa dashboard |
+| `CAUSA_CUSTOMER_ID` | Yes | — | Customer ID from the Causa dashboard |
+| `CAUSA_NAMESPACES` | No | `default` | Kubernetes namespaces to watch (comma-separated) |
+| `CAUSA_HOSTNAME` | No | auto-detected | Override reported hostname |
+| `CAUSA_LABELS` | No | — | Extra labels e.g. `env=prod,role=webserver` |
+| `CAUSA_AWS_REGION` | No | auto-detected | AWS region |
+| `CAUSA_AWS_LOG_GROUPS` | No | — | CloudWatch log groups to query (comma-separated) |
+| `CAUSA_AZURE_WORKSPACE_ID` | No | — | Log Analytics workspace ID |
+| `CAUSA_AZURE_RESOURCE_ID` | No | — | Azure resource ID for metrics |
+| `CAUSA_GCP_PROJECT_ID` | No | auto-detected | GCP project ID |
+
+> **Note:** The legacy `RCABOT_` prefix is still accepted for all variables — existing deployments continue to work without any changes.
 
 ---
 
@@ -152,7 +154,7 @@ pip install google-cloud-logging google-cloud-monitoring
 The agent connects to `causa.infranexis.com` by default. If you are running a self-hosted Causa instance, set:
 
 ```bash
-RCABOT_SERVER_URL=wss://your-causa-instance.com/agent/ws
+CAUSA_SERVER_URL=wss://your-causa-instance.com/agent/ws
 ```
 
 ---
