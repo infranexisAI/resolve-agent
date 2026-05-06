@@ -1,20 +1,20 @@
 """
-Infranexis Resolve — Forwarder Agent
+Infranexis Causa — Forwarder Agent
 =====================================
 Runs anywhere: Kubernetes pod, Linux VM, bare-metal server.
-Makes ONE outbound WebSocket connection to Resolve backend.
+Makes ONE outbound WebSocket connection to Causa backend.
 No inbound ports required.
 
 Install options:
   Kubernetes:  kubectl apply -f https://your-server/dashboard/install/{customer_id}.yaml
   Linux/VM:    curl -fsSL https://your-server/dashboard/install/{customer_id}.sh | sudo bash
-  Docker:      docker run -e RCABOT_API_KEY=... ghcr.io/infranexis/resolve-agent:latest
+  Docker:      docker run -e CAUSA_API_KEY=... ghcr.io/infranexis/causa-agent:latest
 
 Environment variables:
-  RCABOT_SERVER_URL   - wss://your-server/agent/ws
-  RCABOT_API_KEY      - rbk_live_xxx
-  RCABOT_CUSTOMER_ID  - uuid
-  RCABOT_NAMESPACES   - production,staging  (k8s only)
+  CAUSA_SERVER_URL   - wss://your-server/agent/ws
+  CAUSA_API_KEY      - rbk_live_xxx
+  CAUSA_CUSTOMER_ID  - uuid
+  CAUSA_NAMESPACES   - production,staging  (k8s only)
 """
 
 import asyncio
@@ -49,17 +49,33 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
-logger = logging.getLogger("rcabot-agent")
+logger = logging.getLogger("causa-agent")
 
-# Config from environment
-SERVER_URL   = os.environ["RCABOT_SERVER_URL"]    # wss://api.yourproduct.com/agent/ws
-API_KEY      = os.environ["RCABOT_API_KEY"]        # rbk_live_xxx
-CUSTOMER_ID  = os.environ["RCABOT_CUSTOMER_ID"]
-NAMESPACES   = os.environ.get("RCABOT_NAMESPACES", "default").split(",")
-VERSION      = "0.1.0"
+
+def _env(causa_key: str, default: str = "") -> str:
+    """Read CAUSA_ env var, fall back to legacy RCABOT_ name for backward compat."""
+    rcabot_key = causa_key.replace("CAUSA_", "RCABOT_", 1)
+    return os.environ.get(causa_key) or os.environ.get(rcabot_key) or default
+
+
+def _env_required(causa_key: str) -> str:
+    value = _env(causa_key)
+    if not value:
+        rcabot_key = causa_key.replace("CAUSA_", "RCABOT_", 1)
+        raise RuntimeError(f"{causa_key} (or {rcabot_key}) environment variable is required")
+    return value
+
+
+# Config from environment — CAUSA_ prefix, RCABOT_ accepted for backward compat
+SERVER_URL   = _env_required("CAUSA_SERVER_URL")
+API_KEY      = _env_required("CAUSA_API_KEY")
+CUSTOMER_ID  = _env_required("CAUSA_CUSTOMER_ID")
+NAMESPACES   = _env("CAUSA_NAMESPACES", "default").split(",")
+VERSION      = "0.2.0"
 HEARTBEAT_INTERVAL = 30  # seconds
 
-# Labels: RCABOT_LABELS=env=prod,role=webserver
+
+# Labels: CAUSA_LABELS=env=prod,role=webserver
 def _parse_labels(raw: str) -> dict:
     labels = {}
     for pair in raw.split(","):
@@ -69,7 +85,8 @@ def _parse_labels(raw: str) -> dict:
             labels[k.strip()] = v.strip()
     return labels
 
-LABELS = _parse_labels(os.environ.get("RCABOT_LABELS", ""))
+
+LABELS = _parse_labels(_env("CAUSA_LABELS"))
 
 
 # ---------------------------------------------------------------------------
@@ -158,12 +175,12 @@ def detect_capabilities() -> list:
 # ---------------------------------------------------------------------------
 
 # Cloud config from environment
-AWS_REGION     = os.environ.get("RCABOT_AWS_REGION", "")
-AWS_LOG_GROUPS = [g.strip() for g in os.environ.get("RCABOT_AWS_LOG_GROUPS", "").split(",") if g.strip()]
-AZURE_WORKSPACE_ID = os.environ.get("RCABOT_AZURE_WORKSPACE_ID", "")
-AZURE_RESOURCE_ID  = os.environ.get("RCABOT_AZURE_RESOURCE_ID", "")
-GCP_PROJECT_ID  = os.environ.get("RCABOT_GCP_PROJECT_ID", "")
-GCP_LOG_NAMES   = [n.strip() for n in os.environ.get("RCABOT_GCP_LOG_NAMES", "").split(",") if n.strip()]
+AWS_REGION     = _env("CAUSA_AWS_REGION")
+AWS_LOG_GROUPS = [g.strip() for g in _env("CAUSA_AWS_LOG_GROUPS").split(",") if g.strip()]
+AZURE_WORKSPACE_ID = _env("CAUSA_AZURE_WORKSPACE_ID")
+AZURE_RESOURCE_ID  = _env("CAUSA_AZURE_RESOURCE_ID")
+GCP_PROJECT_ID  = _env("CAUSA_GCP_PROJECT_ID")
+GCP_LOG_NAMES   = [n.strip() for n in _env("CAUSA_GCP_LOG_NAMES").split(",") if n.strip()]
 
 
 def _get_aws_region() -> str:
@@ -197,7 +214,7 @@ def collect_aws_context(service: str, fired_at: str) -> dict:
     """
     Collect AWS context via instance-role / IRSA — no static credentials needed.
     Gathers: CloudWatch Logs, Metrics, Alarms, CloudTrail events.
-    Optional env vars: RCABOT_AWS_REGION, RCABOT_AWS_LOG_GROUPS
+    Optional env vars: CAUSA_AWS_REGION, CAUSA_AWS_LOG_GROUPS
     """
     try:
         import boto3
@@ -345,7 +362,7 @@ def collect_azure_context(service: str, fired_at: str) -> dict:
     Collect Azure context via Managed Identity — no credentials needed on Azure VMs / AKS.
     Gathers: Log Analytics logs, Azure Monitor metrics.
     Required: pip install azure-identity azure-monitor-query
-    Optional env vars: RCABOT_AZURE_WORKSPACE_ID, RCABOT_AZURE_RESOURCE_ID
+    Optional env vars: CAUSA_AZURE_WORKSPACE_ID, CAUSA_AZURE_RESOURCE_ID
     """
     try:
         from azure.identity import DefaultAzureCredential
@@ -390,7 +407,7 @@ union AppTraces, AppExceptions, AppRequests, ContainerLog
         except Exception as e:
             result["azure_logs"] = [{"error": str(e)}]
     else:
-        result["azure_logs"] = [{"note": "Set RCABOT_AZURE_WORKSPACE_ID to enable Log Analytics"}]
+        result["azure_logs"] = [{"note": "Set CAUSA_AZURE_WORKSPACE_ID to enable Log Analytics"}]
 
     # ── 2. Azure Monitor Metrics ────────────────────────────────────────────
     if AZURE_RESOURCE_ID:
@@ -417,7 +434,7 @@ union AppTraces, AppExceptions, AppRequests, ContainerLog
         except Exception as e:
             result["azure_metrics"] = [{"error": str(e)}]
     else:
-        result["azure_metrics"] = [{"note": "Set RCABOT_AZURE_RESOURCE_ID to enable metrics"}]
+        result["azure_metrics"] = [{"note": "Set CAUSA_AZURE_RESOURCE_ID to enable metrics"}]
 
     result["collected_at"] = datetime.now(timezone.utc).isoformat()
     return result
@@ -428,7 +445,7 @@ def collect_gcp_context(service: str, fired_at: str) -> dict:
     Collect GCP context via Workload Identity / Application Default Credentials.
     Gathers: Cloud Logging entries, Cloud Monitoring metrics.
     Required: pip install google-cloud-logging google-cloud-monitoring
-    Optional env vars: RCABOT_GCP_PROJECT_ID, RCABOT_GCP_LOG_NAMES
+    Optional env vars: CAUSA_GCP_PROJECT_ID, CAUSA_GCP_LOG_NAMES
     """
     try:
         from google.cloud import logging as gcp_logging
@@ -452,7 +469,7 @@ def collect_gcp_context(service: str, fired_at: str) -> dict:
             with urllib.request.urlopen(req, timeout=2) as r:
                 project_id = r.read().decode()
         except Exception:
-            return {"error": "RCABOT_GCP_PROJECT_ID not set and metadata server unavailable"}
+            return {"error": "CAUSA_GCP_PROJECT_ID not set and metadata server unavailable"}
 
     # ── 1. Cloud Logging ────────────────────────────────────────────────────
     try:
@@ -769,7 +786,7 @@ def collect_gcp_infra_context(fired_at: str) -> dict:
             with urllib.request.urlopen(req, timeout=2) as r:
                 project_id = r.read().decode().strip()
         except Exception:
-            return {"error": "RCABOT_GCP_PROJECT_ID not set and metadata server unavailable"}
+            return {"error": "CAUSA_GCP_PROJECT_ID not set and metadata server unavailable"}
 
     # 1. GCP Status — open incidents (public, no auth required)
     try:
@@ -922,19 +939,221 @@ def handle_collect_system_context(service: str) -> dict:
 def handle_investigate_command(command: str, params: dict) -> dict:
     """Dispatch a targeted investigation command requested by the backend AI loop."""
     handlers = {
-        "top_processes":      lambda: _inv_top_processes(),
-        "process_details":    lambda: _inv_process_details(params.get("name", ""), params.get("pid")),
-        "read_log":           lambda: _inv_read_log(params.get("path", ""), int(params.get("lines", 100))),
-        "search_logs":        lambda: _inv_search_logs(params.get("path", ""), params.get("pattern", ""), int(params.get("lines", 50))),
-        "journal_logs_unit":  lambda: _inv_journal_unit(params.get("unit", ""), int(params.get("lines", 100))),
-        "disk_usage_detail":  lambda: _inv_disk_usage(params.get("path", "/")),
+        # Linux / system commands
+        "top_processes":       lambda: _inv_top_processes(),
+        "process_details":     lambda: _inv_process_details(params.get("name", ""), params.get("pid")),
+        "read_log":            lambda: _inv_read_log(params.get("path", ""), int(params.get("lines", 100))),
+        "search_logs":         lambda: _inv_search_logs(params.get("path", ""), params.get("pattern", ""), int(params.get("lines", 50))),
+        "journal_logs_unit":   lambda: _inv_journal_unit(params.get("unit", ""), int(params.get("lines", 100))),
+        "disk_usage_detail":   lambda: _inv_disk_usage(params.get("path", "/")),
         "network_connections": lambda: _inv_network_connections(params.get("process", "")),
-        "system_overview":    lambda: _inv_system_overview(),
+        "system_overview":     lambda: _inv_system_overview(),
+        # Kubernetes commands
+        "k8s_pod_list":        lambda: _inv_k8s_pod_list(params.get("service", ""), params.get("namespace", "")),
+        "k8s_pod_logs":        lambda: _inv_k8s_pod_logs(params.get("pod", ""), params.get("namespace", "default"), int(params.get("lines", 100)), params.get("container", "")),
+        "k8s_pod_describe":    lambda: _inv_k8s_pod_describe(params.get("pod", ""), params.get("namespace", "default")),
+        "k8s_events":          lambda: _inv_k8s_events(params.get("namespace", ""), params.get("name", "")),
+        "k8s_node_status":     lambda: _inv_k8s_node_status(),
+        "k8s_deployment":      lambda: _inv_k8s_deployment(params.get("name", ""), params.get("namespace", "")),
     }
     fn = handlers.get(command)
     if fn:
         return fn()
     return {"error": f"Unknown investigation command: {command}"}
+
+
+# ---------------------------------------------------------------------------
+# Kubernetes investigation helpers
+# ---------------------------------------------------------------------------
+
+def _k8s_apis():
+    """Return (core_v1, apps_v1) or raise if k8s unavailable."""
+    if not _K8S_AVAILABLE:
+        raise RuntimeError("kubernetes library not installed on this agent")
+    try:
+        k8s_config.load_incluster_config()
+    except Exception:
+        try:
+            k8s_config.load_kube_config()
+        except Exception as e:
+            raise RuntimeError(f"No kubeconfig available: {e}")
+    return k8s_client.CoreV1Api(), k8s_client.AppsV1Api()
+
+
+def _inv_k8s_pod_list(service: str = "", namespace: str = "") -> dict:
+    try:
+        core_v1, _ = _k8s_apis()
+        namespaces = [namespace] if namespace else NAMESPACES
+        pods = []
+        for ns in namespaces:
+            label_sel = f"app={service}" if service else None
+            items = core_v1.list_namespaced_pod(ns, label_selector=label_sel).items
+            for pod in items:
+                cs = pod.status.container_statuses or []
+                restarts = sum(c.restart_count for c in cs)
+                waiting  = next((c.state.waiting for c in cs if c.state and c.state.waiting), None)
+                pods.append({
+                    "name":      pod.metadata.name,
+                    "namespace": ns,
+                    "phase":     pod.status.phase,
+                    "restarts":  restarts,
+                    "reason":    waiting.reason if waiting else None,
+                    "node":      pod.spec.node_name,
+                    "age_s":     int((datetime.now(timezone.utc) - pod.metadata.creation_timestamp.replace(tzinfo=timezone.utc)).total_seconds()) if pod.metadata.creation_timestamp else None,
+                })
+        return {"pods": pods, "count": len(pods)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _inv_k8s_pod_logs(pod: str, namespace: str = "default", lines: int = 100, container: str = "") -> dict:
+    if not pod:
+        return {"error": "pod name required"}
+    try:
+        core_v1, _ = _k8s_apis()
+        kwargs = {"tail_lines": min(lines, 500), "timestamps": True}
+        if container:
+            kwargs["container"] = container
+        # Try current logs, fall back to previous (for crashlooping pods)
+        try:
+            logs = core_v1.read_namespaced_pod_log(pod, namespace, **kwargs)
+        except Exception:
+            logs = core_v1.read_namespaced_pod_log(pod, namespace, previous=True, **kwargs)
+        return {"pod": pod, "namespace": namespace, "logs": logs[:6000], "truncated": len(logs) > 6000}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _inv_k8s_pod_describe(pod: str, namespace: str = "default") -> dict:
+    if not pod:
+        return {"error": "pod name required"}
+    try:
+        core_v1, _ = _k8s_apis()
+        p = core_v1.read_namespaced_pod(pod, namespace)
+        cs = p.status.container_statuses or []
+        containers = []
+        for c in cs:
+            state = {}
+            if c.state.running:
+                state = {"running": True, "started_at": c.state.running.started_at.isoformat() if c.state.running.started_at else None}
+            elif c.state.waiting:
+                state = {"waiting": c.state.waiting.reason, "message": c.state.waiting.message}
+            elif c.state.terminated:
+                state = {"terminated": c.state.terminated.reason, "exit_code": c.state.terminated.exit_code, "message": c.state.terminated.message}
+            last = {}
+            if c.last_state and c.last_state.terminated:
+                lt = c.last_state.terminated
+                last = {"reason": lt.reason, "exit_code": lt.exit_code, "finished_at": lt.finished_at.isoformat() if lt.finished_at else None}
+            containers.append({
+                "name":          c.name,
+                "ready":         c.ready,
+                "restarts":      c.restart_count,
+                "state":         state,
+                "last_state":    last,
+                "image":         c.image,
+                "resources": {
+                    "requests": {k: str(v) for k, v in (p.spec.containers[0].resources.requests or {}).items()} if p.spec.containers else {},
+                    "limits":   {k: str(v) for k, v in (p.spec.containers[0].resources.limits or {}).items()} if p.spec.containers else {},
+                },
+            })
+        # Recent events for this pod
+        evts = []
+        try:
+            event_list = core_v1.list_namespaced_event(namespace, field_selector=f"involvedObject.name={pod}")
+            for e in event_list.items[-10:]:
+                evts.append({"type": e.type, "reason": e.reason, "message": e.message, "count": e.count})
+        except Exception:
+            pass
+        return {
+            "pod":        pod,
+            "namespace":  namespace,
+            "phase":      p.status.phase,
+            "node":       p.spec.node_name,
+            "containers": containers,
+            "events":     evts,
+            "conditions": [{"type": c.type, "status": c.status, "reason": c.reason} for c in (p.status.conditions or [])],
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _inv_k8s_events(namespace: str = "", name: str = "") -> dict:
+    try:
+        core_v1, _ = _k8s_apis()
+        namespaces = [namespace] if namespace else NAMESPACES
+        events = []
+        for ns in namespaces:
+            sel = f"involvedObject.name={name}" if name else None
+            items = core_v1.list_namespaced_event(ns, field_selector=sel).items
+            for e in items:
+                if e.type == "Warning":  # focus on warnings
+                    events.append({
+                        "namespace": ns,
+                        "type":      e.type,
+                        "reason":    e.reason,
+                        "object":    f"{e.involved_object.kind}/{e.involved_object.name}",
+                        "message":   e.message,
+                        "count":     e.count,
+                        "last_seen": e.last_timestamp.isoformat() if e.last_timestamp else None,
+                    })
+        events.sort(key=lambda x: x.get("last_seen") or "", reverse=True)
+        return {"events": events[:30], "total_warnings": len(events)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _inv_k8s_node_status() -> dict:
+    try:
+        core_v1, _ = _k8s_apis()
+        nodes = []
+        for node in core_v1.list_node().items:
+            conditions = {c.type: c.status for c in (node.status.conditions or [])}
+            alloc = node.status.allocatable or {}
+            cap   = node.status.capacity or {}
+            nodes.append({
+                "name":       node.metadata.name,
+                "ready":      conditions.get("Ready") == "True",
+                "pressure": {
+                    "memory": conditions.get("MemoryPressure") == "True",
+                    "disk":   conditions.get("DiskPressure") == "True",
+                    "pid":    conditions.get("PIDPressure") == "True",
+                },
+                "allocatable": {k: str(v) for k, v in alloc.items()},
+                "capacity":    {k: str(v) for k, v in cap.items()},
+                "labels":      dict(list((node.metadata.labels or {}).items())[:10]),
+            })
+        return {"nodes": nodes}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _inv_k8s_deployment(name: str = "", namespace: str = "") -> dict:
+    try:
+        _, apps_v1 = _k8s_apis()
+        namespaces = [namespace] if namespace else NAMESPACES
+        results = []
+        for ns in namespaces:
+            deps = apps_v1.list_namespaced_deployment(ns).items
+            for dep in deps:
+                if name and name.lower() not in dep.metadata.name.lower():
+                    continue
+                conds = [{"type": c.type, "status": c.status, "reason": c.reason, "message": c.message}
+                         for c in (dep.status.conditions or [])]
+                results.append({
+                    "name":             dep.metadata.name,
+                    "namespace":        ns,
+                    "desired":          dep.spec.replicas,
+                    "ready":            dep.status.ready_replicas,
+                    "available":        dep.status.available_replicas,
+                    "updated":          dep.status.updated_replicas,
+                    "conditions":       conds,
+                    "change_cause":     (dep.metadata.annotations or {}).get("kubernetes.io/change-cause", ""),
+                    "image":            dep.spec.template.spec.containers[0].image if dep.spec.template.spec.containers else "",
+                    "created":          dep.metadata.creation_timestamp.isoformat() if dep.metadata.creation_timestamp else None,
+                })
+        return {"deployments": results}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def _inv_top_processes() -> dict:
@@ -1476,7 +1695,7 @@ async def run_agent():
         "type":         "hello",
         "api_key":      API_KEY,
         "customer_id":  CUSTOMER_ID,
-        "hostname":     os.environ.get("RCABOT_HOSTNAME") or socket.gethostname(),
+        "hostname":     _env("CAUSA_HOSTNAME") or socket.gethostname(),
         "labels":       LABELS,
         "version":      VERSION,
         "namespaces":   NAMESPACES,
