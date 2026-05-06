@@ -916,6 +916,300 @@ def handle_collect_system_context(service: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Targeted investigation commands (agentic investigation loop)
+# ---------------------------------------------------------------------------
+
+def handle_investigate_command(command: str, params: dict) -> dict:
+    """Dispatch a targeted investigation command requested by the backend AI loop."""
+    handlers = {
+        "top_processes":      lambda: _inv_top_processes(),
+        "process_details":    lambda: _inv_process_details(params.get("name", ""), params.get("pid")),
+        "read_log":           lambda: _inv_read_log(params.get("path", ""), int(params.get("lines", 100))),
+        "search_logs":        lambda: _inv_search_logs(params.get("path", ""), params.get("pattern", ""), int(params.get("lines", 50))),
+        "journal_logs_unit":  lambda: _inv_journal_unit(params.get("unit", ""), int(params.get("lines", 100))),
+        "disk_usage_detail":  lambda: _inv_disk_usage(params.get("path", "/")),
+        "network_connections": lambda: _inv_network_connections(params.get("process", "")),
+        "system_overview":    lambda: _inv_system_overview(),
+    }
+    fn = handlers.get(command)
+    if fn:
+        return fn()
+    return {"error": f"Unknown investigation command: {command}"}
+
+
+def _inv_top_processes() -> dict:
+    result = {}
+    if _PSUTIL_AVAILABLE:
+        procs = []
+        for p in psutil.process_iter(["pid", "name", "cmdline", "cpu_percent", "memory_info", "status", "username"]):
+            try:
+                info = p.info
+                procs.append({
+                    "pid":    info["pid"],
+                    "name":   info["name"],
+                    "cmd":    " ".join((info["cmdline"] or [])[:5]) or info["name"],
+                    "cpu":    info["cpu_percent"] or 0,
+                    "mem_mb": (info["memory_info"].rss // (1024 * 1024)) if info["memory_info"] else 0,
+                    "status": info["status"],
+                    "user":   info["username"] or "",
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        result["top_by_cpu"]    = sorted(procs, key=lambda x: x["cpu"],    reverse=True)[:15]
+        result["top_by_memory"] = sorted(procs, key=lambda x: x["mem_mb"], reverse=True)[:15]
+        result["total_processes"] = len(procs)
+    else:
+        try:
+            out = subprocess.run(["ps", "aux", "--sort=-%cpu"], capture_output=True, text=True, timeout=5)
+            result["ps_output"] = out.stdout[:3000]
+        except Exception as e:
+            result["error"] = str(e)
+    return result
+
+
+def _inv_process_details(name: str = "", pid=None) -> dict:
+    result = {}
+    if _PSUTIL_AVAILABLE:
+        targets = []
+        if pid:
+            try:
+                targets = [psutil.Process(int(pid))]
+            except Exception:
+                pass
+        elif name:
+            targets = [p for p in psutil.process_iter(["name"]) if name.lower() in p.name().lower()][:5]
+
+        if not targets:
+            return {"error": f"No process found: name={name} pid={pid}"}
+
+        details = []
+        for p in targets[:3]:
+            try:
+                with p.oneshot():
+                    d = {
+                        "pid":     p.pid,
+                        "name":    p.name(),
+                        "cmdline": " ".join(p.cmdline()[:10]) if p.cmdline() else "",
+                        "status":  p.status(),
+                        "cpu":     p.cpu_percent(interval=0.5),
+                        "mem_mb":  p.memory_info().rss // (1024 * 1024),
+                        "threads": p.num_threads(),
+                        "user":    p.username(),
+                        "cwd":     "",
+                        "open_files":  [],
+                        "connections": [],
+                    }
+                    try:
+                        d["cwd"] = p.cwd()
+                    except Exception:
+                        pass
+                    try:
+                        d["open_files"] = [f.path for f in p.open_files()[:20]]
+                    except Exception:
+                        pass
+                    try:
+                        d["connections"] = [
+                            {
+                                "status": c.status,
+                                "local":  f"{c.laddr.ip}:{c.laddr.port}" if c.laddr else "",
+                                "remote": f"{c.raddr.ip}:{c.raddr.port}" if c.raddr else "",
+                            }
+                            for c in p.net_connections()[:20]
+                        ]
+                    except Exception:
+                        pass
+                    details.append(d)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        result["processes"] = details
+    else:
+        try:
+            cmd = ["ps", "-p", str(pid), "-f"] if pid else ["pgrep", "-la", name]
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            result["ps_output"] = out.stdout[:2000]
+        except Exception as e:
+            result["error"] = str(e)
+    return result
+
+
+def _inv_read_log(path: str, lines: int = 100) -> dict:
+    if not path:
+        return {"error": "No path specified"}
+    safe_prefixes = ("/var/log/", "/tmp/", "/opt/", "/home/", "/srv/", "/app/", "/data/", "/run/log/")
+    if not any(path.startswith(p) for p in safe_prefixes):
+        return {"error": f"Path not in allowed locations: {path}"}
+    try:
+        out = subprocess.run(["tail", "-n", str(min(lines, 500)), path],
+                             capture_output=True, text=True, timeout=5)
+        if out.returncode != 0:
+            return {"error": out.stderr[:500] or f"Cannot read {path}"}
+        content = out.stdout[:5000]
+        return {"path": path, "content": content, "truncated": len(out.stdout) > 5000}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _inv_search_logs(path: str, pattern: str, lines: int = 50) -> dict:
+    if not path or not pattern:
+        return {"error": "path and pattern required"}
+    safe_prefixes = ("/var/log/", "/tmp/", "/opt/", "/home/", "/srv/", "/app/", "/data/", "/run/log/")
+    if not any(path.startswith(p) for p in safe_prefixes):
+        return {"error": f"Path not in allowed locations: {path}"}
+    try:
+        out = subprocess.run(["grep", "-i", "-n", "--", pattern, path],
+                             capture_output=True, text=True, timeout=5)
+        matches = out.stdout.splitlines()
+        return {
+            "path":          path,
+            "pattern":       pattern,
+            "matches":       matches[-lines:],
+            "total_matches": len(matches),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _inv_journal_unit(unit: str, lines: int = 100) -> dict:
+    if not unit:
+        return {"error": "unit name required"}
+    try:
+        out = subprocess.run(
+            ["journalctl", "-u", unit, "-n", str(min(lines, 500)), "--no-pager", "--output=short-iso"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return {"unit": unit, "logs": out.stdout[:5000] or "(no logs)", "truncated": len(out.stdout) > 5000}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _inv_disk_usage(path: str = "/") -> dict:
+    result = {}
+
+    # 1. df -h — instant
+    try:
+        out = subprocess.run(["df", "-h"], capture_output=True, text=True, timeout=5)
+        result["df"] = out.stdout
+    except Exception as e:
+        result["df_error"] = str(e)
+
+    # 2. Size of key top-level dirs individually — much faster than du --max-depth
+    key_dirs = [d for d in ["/var", "/tmp", "/home", "/opt", "/usr", "/root",
+                             "/srv", "/data", "/run", "/snap", "/mnt"]
+                if os.path.isdir(d)]
+    if key_dirs:
+        try:
+            out2 = subprocess.run(["du", "-sh"] + key_dirs,
+                                  capture_output=True, text=True, timeout=8)
+            if out2.stdout.strip():
+                result["dir_sizes"] = out2.stdout.strip().splitlines()
+        except subprocess.TimeoutExpired:
+            result["dir_sizes_note"] = "du timed out on key directories"
+        except Exception as e:
+            result["dir_sizes_error"] = str(e)
+
+    # 3. Find large files in most likely locations only (fast)
+    search_dirs = [d for d in ["/tmp", "/var", "/home", "/opt", "/root", "/data", "/srv"]
+                   if os.path.isdir(d)]
+    for d in search_dirs:
+        try:
+            out3 = subprocess.run(
+                ["find", d, "-maxdepth", "3", "-type", "f", "-size", "+100M"],
+                capture_output=True, text=True, timeout=5,
+            )
+            files = [f for f in out3.stdout.splitlines() if f][:10]
+            if files:
+                out4 = subprocess.run(["ls", "-lh"] + files,
+                                      capture_output=True, text=True, timeout=3)
+                result.setdefault("large_files", "")
+                result["large_files"] += out4.stdout
+        except Exception:
+            pass
+
+    return result
+
+
+def _inv_network_connections(process: str = "") -> dict:
+    result = {}
+    if process and _PSUTIL_AVAILABLE:
+        conns = []
+        for p in psutil.process_iter(["name", "pid"]):
+            if process.lower() in p.name().lower():
+                try:
+                    for c in p.net_connections():
+                        conns.append({
+                            "pid":     p.pid,
+                            "process": p.name(),
+                            "status":  c.status,
+                            "local":   f"{c.laddr.ip}:{c.laddr.port}" if c.laddr else "",
+                            "remote":  f"{c.raddr.ip}:{c.raddr.port}" if c.raddr else "",
+                        })
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+        result["connections"] = conns[:50]
+    else:
+        try:
+            out = subprocess.run(["ss", "-tnp"], capture_output=True, text=True, timeout=5)
+            result["ss_output"] = out.stdout[:3000]
+        except Exception as e:
+            result["error"] = str(e)
+    try:
+        out2 = subprocess.run(["ss", "-s"], capture_output=True, text=True, timeout=5)
+        result["connection_summary"] = out2.stdout
+    except Exception:
+        pass
+    return result
+
+
+def _inv_system_overview() -> dict:
+    result = {}
+    if _PSUTIL_AVAILABLE:
+        try:
+            cpu_per_core = psutil.cpu_percent(interval=1, percpu=True)
+            result["cpu_total_pct"]  = round(sum(cpu_per_core) / len(cpu_per_core), 1)
+            result["cpu_per_core"]   = cpu_per_core
+            result["cpu_count"]      = psutil.cpu_count()
+            mem  = psutil.virtual_memory()
+            swap = psutil.swap_memory()
+            result["memory"] = {
+                "total_mb":     mem.total // (1024 * 1024),
+                "used_mb":      mem.used // (1024 * 1024),
+                "available_mb": mem.available // (1024 * 1024),
+                "percent":      mem.percent,
+                "cached_mb":    getattr(mem, "cached", 0) // (1024 * 1024),
+            }
+            result["swap"] = {
+                "total_mb": swap.total // (1024 * 1024),
+                "used_mb":  swap.used // (1024 * 1024),
+                "percent":  swap.percent,
+            }
+            try:
+                io = psutil.disk_io_counters()
+                result["disk_io"] = {
+                    "read_mb":    io.read_bytes  // (1024 * 1024),
+                    "write_mb":   io.write_bytes // (1024 * 1024),
+                    "read_ops":   io.read_count,
+                    "write_ops":  io.write_count,
+                }
+            except Exception:
+                pass
+            result["load_avg"]     = list(os.getloadavg())
+            result["uptime_hours"] = round((time.time() - psutil.boot_time()) / 3600, 1)
+            # Recent OOM events
+            try:
+                out = subprocess.run(
+                    ["journalctl", "-k", "--no-pager", "-n", "20", "--grep", "oom"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if out.stdout.strip():
+                    result["recent_oom"] = out.stdout[:1000]
+            except Exception:
+                pass
+        except Exception as e:
+            result["error"] = str(e)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Context collectors — run inside the cluster, talk to local APIs
 # ---------------------------------------------------------------------------
 
@@ -1324,6 +1618,33 @@ async def run_agent():
                                 logger.exception(f"Infra context collection failed: {e}")
                                 await ws.send(json.dumps({
                                     "type":           "infra_context_response",
+                                    "status":         "error",
+                                    "error":          str(e),
+                                    "correlation_id": corr_id,
+                                }))
+
+                        elif msg.get("type") == "investigate":
+                            command = msg.get("command", "")
+                            params  = msg.get("params", {})
+                            corr_id = msg.get("correlation_id", "")
+                            try:
+                                # Run in thread so blocking subprocesses don't stall the event loop
+                                loop = asyncio.get_running_loop()
+                                import concurrent.futures as _cf
+                                with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
+                                    data = await loop.run_in_executor(
+                                        _ex, handle_investigate_command, command, params
+                                    )
+                                await ws.send(json.dumps({
+                                    "type":           "investigate_response",
+                                    "status":         "ok",
+                                    "data":           data,
+                                    "correlation_id": corr_id,
+                                }))
+                            except Exception as e:
+                                logger.exception(f"Investigation command '{command}' failed: {e}")
+                                await ws.send(json.dumps({
+                                    "type":           "investigate_response",
                                     "status":         "error",
                                     "error":          str(e),
                                     "correlation_id": corr_id,
